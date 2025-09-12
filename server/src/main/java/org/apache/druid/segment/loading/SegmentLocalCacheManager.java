@@ -44,11 +44,14 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  *
@@ -153,38 +156,73 @@ public class SegmentLocalCacheManager implements SegmentCacheManager
     final File infoDir = getEffectiveInfoDir();
     FileUtils.mkdirp(infoDir);
 
-    final List<DataSegment> cachedSegments = new ArrayList<>();
+    final List<DataSegment> cachedSegments = Collections.synchronizedList(new ArrayList<>());
     final File[] segmentsToLoad = infoDir.listFiles();
 
-    int ignored = 0;
+    if (segmentsToLoad != null) {
 
-    for (int i = 0; i < segmentsToLoad.length; i++) {
-      final File file = segmentsToLoad[i];
-      log.info("Loading segment cache file [%d/%d][%s].", i + 1, segmentsToLoad.length, file);
+      final ExecutorService scanExecutor = Execs.multiThreaded(config.getNumBootstrapThreads(), "Segment-Scan-%s");
+
+      final AtomicInteger ignored = new AtomicInteger(0);
+
       try {
-        final DataSegment segment = jsonMapper.readValue(file, DataSegment.class);
-        if (!segment.getId().toString().equals(file.getName())) {
-          log.warn("Ignoring cache file[%s] for segment[%s].", file.getPath(), segment.getId());
-          ignored++;
-        } else if (isSegmentCached(segment)) {
-          cachedSegments.add(segment);
-        } else {
-          final SegmentId segmentId = segment.getId();
-          log.warn("Unable to find cache file for segment[%s]. Deleting lookup entry.", segmentId);
-          removeInfoFile(segment);
+        final CountDownLatch latch = new CountDownLatch(segmentsToLoad.length);
+        for (int i = 0; i < segmentsToLoad.length; i++) {
+          final File file = segmentsToLoad[i];
+          log.info("Submitting load of segment cache file [%d/%d][%s].", i + 1, segmentsToLoad.length, file);
+          try {
+            scanExecutor.submit(
+                () -> {
+                  try {
+                    log.debug("Loading segment cache file [%s]", file);
+                    final DataSegment segment = jsonMapper.readValue(file, DataSegment.class);
+                    if (!segment.getId().toString().equals(file.getName())) {
+                      log.warn("Ignoring cache file[%s] for segment[%s].", file.getPath(), segment.getId());
+                      ignored.incrementAndGet();
+                    } else if (isSegmentCached(segment)) {
+                      cachedSegments.add(segment);
+                      log.debug("Added cache segment [%s]", segment);
+                    } else {
+                      final SegmentId segmentId = segment.getId();
+                      log.warn("Unable to find cache file for segment[%s]. Deleting lookup entry.", segmentId);
+                      removeInfoFile(segment);
+                    }
+                  }
+                  catch (Exception e) {
+                    log.makeAlert(e, "Failed to load segment from segment cache file.")
+                            .addData("file", file)
+                            .emit();
+                  }
+                  finally {
+                    latch.countDown();
+                  }
+                }
+            );
+          }
+          catch (RuntimeException e) {
+            latch.countDown();
+            log.makeAlert(e, "Failed to submit task to load segment from segment cache file.")
+                    .addData("file", file)
+                    .emit();
+          }
         }
+        // Initiate shutdown
+        scanExecutor.shutdown();
+        latch.await();
       }
-      catch (Exception e) {
-        log.makeAlert(e, "Failed to load segment from segment cache file.")
-           .addData("file", file)
-           .emit();
+      catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        log.makeAlert(e, "Scanning interrupted").emit();
       }
-    }
+      finally {
+        scanExecutor.shutdownNow();
+      }
 
-    if (ignored > 0) {
-      log.makeAlert("Ignored misnamed segment cache files on startup.")
-         .addData("numIgnored", ignored)
-         .emit();
+      if (ignored.get() > 0) {
+        log.makeAlert("Ignored misnamed segment cache files on startup.")
+                .addData("numIgnored", ignored)
+                .emit();
+      }
     }
 
     return cachedSegments;
