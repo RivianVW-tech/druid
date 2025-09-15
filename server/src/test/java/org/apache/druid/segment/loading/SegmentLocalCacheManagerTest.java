@@ -50,6 +50,9 @@ import org.junit.rules.TemporaryFolder;
 
 import java.io.File;
 import java.io.IOException;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -211,6 +214,50 @@ public class SegmentLocalCacheManagerTest
 
     Assert.assertTrue(manager.canHandleSegments());
     assertThat(manager.getCachedSegments(), containsInAnyOrder(segment1, segment2));
+  }
+
+  @Test
+  public void testGetCachedSegmentsMultipleLoad() throws IOException
+  {
+    final ObjectMapper jsonMapper = TestHelper.makeJsonMapper();
+    jsonMapper.registerSubtypes(TestSegmentUtils.TestLoadSpec.class);
+    jsonMapper.registerSubtypes(TestSegmentUtils.TestSegmentizerFactory.class);
+
+    final List<StorageLocationConfig> locationConfigs = new ArrayList<>();
+    final StorageLocationConfig locationConfig = new StorageLocationConfig(localSegmentCacheFolder, 10000000000L, null);
+    locationConfigs.add(locationConfig);
+
+    final SegmentLoaderConfig loaderConfig = new SegmentLoaderConfig()
+    {
+      @Override
+      public int getNumBootstrapThreads()
+      {
+        return 8;
+      }
+    }.withLocations(locationConfigs);
+    final List<StorageLocation> storageLocations = loaderConfig.toStorageLocations();
+    manager = new SegmentLocalCacheManager(
+            storageLocations,
+            loaderConfig,
+            new LeastBytesUsedStorageLocationSelectorStrategy(storageLocations),
+            TestIndex.INDEX_IO,
+            jsonMapper
+    );
+    final File baseInfoDir = new File(storageLocations.get(0).getPath(), "/info_dir/");
+    FileUtils.mkdirp(baseInfoDir);
+
+    List<DataSegment> segments = new ArrayList<>();
+    LocalDate currDay = LocalDate.now(ZoneOffset.UTC);
+    for (int i = 0; i < 100; ++i) {
+      currDay = currDay.minusDays(1);
+      DataSegment segment = TestSegmentUtils.makeSegment("test_segment_loader", "v0", Intervals.of(currDay.atStartOfDay().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) + "Z/P1D"));
+      segments.add(segment);
+      writeSegmentFile(segment);
+      manager.storeInfoFile(segment);
+    }
+
+    Assert.assertTrue(manager.canHandleSegments());
+    assertThat(manager.getCachedSegments(), containsInAnyOrder(segments.toArray()));
   }
 
   @Test

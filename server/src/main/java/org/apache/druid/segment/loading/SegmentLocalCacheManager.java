@@ -156,7 +156,9 @@ public class SegmentLocalCacheManager implements SegmentCacheManager
     final File infoDir = getEffectiveInfoDir();
     FileUtils.mkdirp(infoDir);
 
-    final List<DataSegment> cachedSegments = Collections.synchronizedList(new ArrayList<>());
+    final List<DataSegment> cachedSegments = new ArrayList<>();
+    // A synchronized list for multiple threads to write to it
+    final List<DataSegment> sCachedSegments = Collections.synchronizedList(cachedSegments);
     final File[] segmentsToLoad = infoDir.listFiles();
 
     if (segmentsToLoad != null) {
@@ -180,7 +182,7 @@ public class SegmentLocalCacheManager implements SegmentCacheManager
                       log.warn("Ignoring cache file[%s] for segment[%s].", file.getPath(), segment.getId());
                       ignored.incrementAndGet();
                     } else if (isSegmentCached(segment)) {
-                      cachedSegments.add(segment);
+                      sCachedSegments.add(segment);
                       log.debug("Added cache segment [%s]", segment);
                     } else {
                       final SegmentId segmentId = segment.getId();
