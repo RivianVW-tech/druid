@@ -153,6 +153,7 @@ public class SegmentLocalCacheManager implements SegmentCacheManager
           "canHandleSegments() is false. getCachedSegments() must be invoked only when canHandleSegments() returns true."
       );
     }
+
     final File infoDir = getEffectiveInfoDir();
     FileUtils.mkdirp(infoDir);
 

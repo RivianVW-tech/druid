@@ -172,7 +172,7 @@ public class SegmentBootstrapper
   private void loadSegmentsOnStartup() throws IOException
   {
     final List<DataSegment> segmentsOnStartup = new ArrayList<>();
-    segmentsOnStartup.addAll(segmentManager.getCachedSegments());
+    segmentsOnStartup.addAll(getCachedSegments());
     segmentsOnStartup.addAll(getBootstrapSegments());
 
     final Stopwatch stopwatch = Stopwatch.createStarted();
@@ -263,6 +263,21 @@ public class SegmentBootstrapper
       segmentManager.shutdownBootstrap();
       log.info("Loaded [%d] segments on startup in [%,d]ms.", segmentsOnStartup.size(), stopwatch.millisElapsed());
     }
+  }
+
+  /**
+   * @return a list of cached segments from local cache.
+   */
+  private List<DataSegment> getCachedSegments() throws IOException
+  {
+    final Stopwatch stopwatch = Stopwatch.createStarted();
+    List<DataSegment> cachedSegments = segmentManager.getCachedSegments();
+    stopwatch.stop();
+    final long cacheRunMillis = stopwatch.millisElapsed();
+    emitter.emit(new ServiceMetricEvent.Builder().setMetric("segment/cache/fetch/time", cacheRunMillis));
+    emitter.emit(new ServiceMetricEvent.Builder().setMetric("segment/cache/fetch/count", cachedSegments.size()));
+    log.info("Retrieved [%d] cached segments on startup in [%,d]ms.", cachedSegments.size(), cacheRunMillis);
+    return cachedSegments;
   }
 
   /**
